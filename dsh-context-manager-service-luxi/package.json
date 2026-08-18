@@ -1,0 +1,12 @@
+{
+  "name": "dsh-context-manager-service-luxi",
+  "version": "0.1.0",
+  "description": "Host-plane context-manager Remote service: durable per-session conversation records with priority ordering",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "license": "MIT"
+}

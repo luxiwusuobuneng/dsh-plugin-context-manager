@@ -1,0 +1,18 @@
+{
+  "name": "dsh-context-manager-ui-luxi",
+  "version": "0.1.0",
+  "description": "Browser UI half of the context-manager: dock button + management window (records / real conversation / injection settings). Mounted as a WEB-profile row because preset rows cannot deliver client bundles (clientModules only scans loader entries).",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  },
+  "license": "MIT"
+}
