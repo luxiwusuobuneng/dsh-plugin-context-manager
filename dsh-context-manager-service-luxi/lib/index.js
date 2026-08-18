@@ -129,6 +129,15 @@ function shrinkRange(surface, startSeq, endSeq) {
   return { startSeq: start, endSeq: end };
 }
 
+/** Reject after `ms` milliseconds if `promise` does not settle first. */
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label}超时(${Math.round(ms / 1000)}s)`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 /**
  * Split an arbitrary user-selected [start, end] range into balanced segments
  * the compaction engine will accept: each segment starts on a
@@ -595,6 +604,9 @@ let ContextManagerService = (() => {
         await domain.close();
       }, "context-manager.domainClose");
       this.table = domain.table("sessions");
+      // Serialized put chain: concurrent status/history/records writes never
+      // interleave; each write snapshots the latest row.
+      this.putChain = Promise.resolve();
 
       // Restore durable fold state (#4): queued folds and the audit trail
       // survive restarts. pendingFolds/foldStatuses/foldHistorys are memory
@@ -635,7 +647,13 @@ let ContextManagerService = (() => {
               if (compaction === void 0) {
                 this.reportFoldResult(sessionId, pending.requestId, new Error("compaction 服务不可用(根平面未挂载被动压缩实例)"));
               } else {
-                await this.executeFoldSegments(sessionId, pending, compaction, agent, signal);
+                // Mark running (persisted) and execute in the BACKGROUND: a
+                // slow/failed compaction must never stall the conversation
+                // turn. Status + failure reasons are persisted either way.
+                this.foldStatuses.set(sessionId, { status: "running", requestId: pending.requestId, at: Date.now() });
+                void this.persistFoldStatus(sessionId);
+                void this.executeFoldSegments(sessionId, pending, compaction, agent, signal)
+                  .catch((error) => this.reportFoldResult(sessionId, pending.requestId, error));
               }
             }
           } catch (error) {
@@ -917,7 +935,15 @@ let ContextManagerService = (() => {
         next = pruneRecords(next, cap);
       }
       // Spread the whole row: never drop injectionText / settings alongside records.
-      await this.table.put(sessionId, { ...row, session: identity, records: next });
+      // Serialized through putChain; re-reads the latest row so concurrent
+      // fold-status/history writes are never clobbered.
+      const appended = { session: identity, records: next };
+      this.putChain = this.putChain.then(async () => {
+        const fresh = this.table?.get(sessionId);
+        if (fresh !== void 0) await this.table.put(sessionId, { ...fresh, ...appended });
+      }).catch((error) => {
+        this.ctx.logger.warn(`context-manager: record persist failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
       return { id: record.id };
     }
 
@@ -1117,15 +1143,16 @@ let ContextManagerService = (() => {
       const requestId = randomUUID();
       this.pendingFolds.set(sessionId, { requestId, start, end });
       this.foldStatuses.set(sessionId, { status: "queued", requestId, at: Date.now() });
-      // #4: persist the queued fold so it survives restarts.
-      try {
-        const row = this.table?.get(sessionId);
-        if (row !== void 0) {
-          void this.table.put(sessionId, { ...row, pendingFold: { requestId, start, end } });
+      // #4: persist the queued fold so it survives restarts (serialized).
+      const queued = { requestId, start, end };
+      this.putChain = this.putChain.then(async () => {
+        try {
+          const row = this.table?.get(sessionId);
+          if (row !== void 0) await this.table.put(sessionId, { ...row, pendingFold: queued });
+        } catch (error) {
+          this.ctx.logger.warn(`context-manager: pending fold persist failed: ${error instanceof Error ? error.message : String(error)}`);
         }
-      } catch (error) {
-        this.ctx.logger.warn(`context-manager: pending fold persist failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      }).catch(() => {});
       return { queued: true, requestId };
     }
 
@@ -1251,16 +1278,19 @@ let ContextManagerService = (() => {
       if (current !== void 0 && current.status === "queued") {
         this.foldStatuses.set(sessionId, { ...current, status: "running" });
       }
-      // Clear the durable queue entry; execution outcome lands via reportFoldResult/afterFold.
-      try {
-        const row = this.table?.get(sessionId);
-        if (row !== void 0 && row.pendingFold !== void 0) {
-          const { pendingFold: _dropped, ...rest } = row;
-          void this.table.put(sessionId, rest);
+      // Clear the durable queue entry (serialized); execution outcome lands
+      // via reportFoldResult/afterFold.
+      this.putChain = this.putChain.then(async () => {
+        try {
+          const row = this.table?.get(sessionId);
+          if (row !== void 0 && row.pendingFold !== void 0) {
+            const { pendingFold: _dropped, ...rest } = row;
+            await this.table.put(sessionId, rest);
+          }
+        } catch (error) {
+          this.ctx.logger.warn(`context-manager: pending fold clear failed: ${error instanceof Error ? error.message : String(error)}`);
         }
-      } catch (error) {
-        this.ctx.logger.warn(`context-manager: pending fold clear failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      }).catch(() => {});
       return pending;
     }
 
@@ -1300,7 +1330,7 @@ let ContextManagerService = (() => {
       let folded = 0;
       try {
         for (const segment of segments) {
-          await compaction.compactRegion(segment.start, segment.end, agent, signal);
+          await withTimeout(compaction.compactRegion(segment.start, segment.end, agent, signal), 90000, "折叠单段");
           folded += 1;
         }
         const extra = remaining > 0
@@ -1322,22 +1352,35 @@ let ContextManagerService = (() => {
         ? { status: "done", requestId, at: Date.now(), message: typeof extra === "string" ? extra : void 0 }
         : { status: "failed", requestId, at: Date.now(), message: error instanceof Error ? error.message : String(error) };
       this.foldStatuses.set(sessionId, status);
-      // Persist so failure reasons survive restarts and can be diagnosed later.
-      try {
-        const row = this.table?.get(sessionId);
-        if (row !== void 0) {
-          const clean = { status: status.status, requestId: status.requestId, at: status.at };
-          if (status.message !== void 0) clean.message = status.message;
-          void this.table.put(sessionId, { ...row, foldStatus: clean });
-        }
-      } catch (persistError) {
-        this.ctx.logger.warn(`context-manager: fold status persist failed: ${persistError instanceof Error ? persistError.message : String(persistError)}`);
-      }
+      // Persist (serialized) so failure reasons survive restarts.
+      void this.persistFoldStatus(sessionId);
       if (error !== void 0) {
         this.ctx.logger.warn(`context-manager: fold ${requestId} failed: ${status.message}`);
       } else {
         this.ctx.logger.info(`context-manager: fold ${requestId} completed for ${sessionId}${typeof extra === "string" ? ` (${extra})` : ""}`);
       }
+    }
+
+    /**
+     * Serialized persistence of one session's latest fold status. Writes go
+     * through a per-service promise chain so concurrent puts (status +
+     * history + records) never interleave and every payload builds on the
+     * latest row snapshot.
+     */
+    persistFoldStatus(sessionId) {
+      const status = this.foldStatuses.get(sessionId);
+      if (status === void 0) return Promise.resolve();
+      const clean = { status: status.status, requestId: status.requestId, at: status.at };
+      if (status.message !== void 0) clean.message = status.message;
+      this.putChain = this.putChain.then(async () => {
+        try {
+          const row = this.table?.get(sessionId);
+          if (row !== void 0) await this.table.put(sessionId, { ...row, foldStatus: clean });
+        } catch (persistError) {
+          this.ctx.logger.warn(`context-manager: fold status persist failed: ${persistError instanceof Error ? persistError.message : String(persistError)}`);
+        }
+      }).catch(() => {});
+      return this.putChain;
     }
 
     /**
@@ -1360,11 +1403,16 @@ let ContextManagerService = (() => {
         history.push(entry);
         if (history.length > 20) history.shift();
         this.foldHistorys.set(sessionId, history);
-        // #4: persist the audit trail so it survives restarts.
-        const row = this.table?.get(sessionId);
-        if (row !== void 0) {
-          void this.table.put(sessionId, { ...row, foldHistory: history });
-        }
+        // #4: persist the audit trail so it survives restarts (serialized).
+        const snapshot = history.slice();
+        this.putChain = this.putChain.then(async () => {
+          try {
+            const row = this.table?.get(sessionId);
+            if (row !== void 0) await this.table.put(sessionId, { ...row, foldHistory: snapshot });
+          } catch (error) {
+            this.ctx.logger.warn(`context-manager: fold audit persist failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }).catch(() => {});
       } catch (error) {
         this.ctx.logger.warn(`context-manager: fold audit failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -1388,7 +1436,12 @@ let ContextManagerService = (() => {
           return { ...record, startSeq: shrunk.startSeq, endSeq: shrunk.endSeq };
         });
         if (changed) {
-          void this.table.put(sessionId, { ...row, records });
+          // Serialized: re-read the latest row so queued writes are kept.
+          const cleaned = records;
+          this.putChain = this.putChain.then(async () => {
+            const fresh = this.table?.get(sessionId);
+            if (fresh !== void 0) await this.table.put(sessionId, { ...fresh, records: cleaned });
+          }).catch(() => {});
         }
       } catch (error) {
         this.ctx.logger.warn(`context-manager: fold range cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
