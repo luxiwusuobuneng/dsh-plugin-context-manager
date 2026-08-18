@@ -9,18 +9,6 @@ DeepSeek Harness 的自定义插件：自动记录每次对话交换，按优先
 - **持久化 + 重启安全**：记录、注入、排队中的折叠、折叠审计全部落盘，重启后照常工作。
 - **开箱即用 + 全可调**：四个标签页管理一切；注入条数、字符预算、记录上限运行时可调，无需改配置重启。
 
-## 架构
-
-| 包 | 平面 | 职责 |
-|---|---|---|
-| `dsh-context-manager-service-luxi` | Host | 持久化存储（`context_manager` domain）+ **全局记录**（所有 preset 的根会话都自动记录，`summarize` 可选 LLM 提炼）+ Remote API：`list` / `count` / `record` / `remove` / `reorder` / `update` / `setGlobal` / `clear` / `listGlobal` / `compact` / `conversationList` / `foldRange` / `foldStatus` / `setInjectionText` / `getInjectionText` / `getSettings` / `setSettings`；根平面 `agent/pre-step` 监听器：执行排队的历史折叠、把记录/自定义文本注入真实消息流 |
-| `dsh-context-manager-agent-luxi`（`lib/index.js`） | Agent preset 行 | 仅保留**回退注入**：当服务端消息注入关闭（`injectIntoMessages: false`）时，把记录注入 system-prompt 快照。记录逻辑已退役（2026-08-17 起由服务端全局接管） |
-| `dsh-context-manager-ui-luxi` | **Web 层行**（不是 preset 行） | 浏览器 UI：输入框右下角「上下文」按钮 + 管理窗口（记录 / 真实对话 / 注入设置 三个标签页）。host 半是空操作，纯为把客户端 bundle 送进浏览器 |
-
-> ⚠️ **为什么 UI 必须是 Web 层行而不是 preset 行**：浏览器客户端 bundle 由 `clientModules` 服务发现，它只扫描 **loader 条目**（web 组合的行）；agent preset 的组成树是直接插入的作用域子树，**明确不在 `ctx.loader.entries()` 里**（见 `dsh-agent-presets/lib/types/mount.js` 注释），所以 preset 行里挂 `dsh.client` 永远不会被扫描到、bundle 永远 404、页面清单 `window.__DSH_BOOT__` 里也没有它。`dsh-context-manager-ui-luxi` 作为 web patch 行挂载后，UI 在**所有会话**都可用。
-
-> 💡 **记录范围**（2026-08-17 方案 B）：记录从 agent 行搬进 host 服务——**所有 preset 的根会话**都自动记录（子代理/工作流子会话不记录，避免污染与 token 浪费）。之前"只有 my-agent preset 会话才记录"的限制已消除。
-
 ## 「控制实际对话上下文」能力
 
 - **真实对话查看**（`conversationList`）：列出模型实际看到的每条消息（角色 / 文本 / token 估算 / 总占用），含之前折叠留下的摘要节点。
@@ -139,6 +127,18 @@ DeepSeek Harness 的自定义插件：自动记录每次对话交换，按优先
 - `typert gateway: ... business result failed boundary validation`:Remote 方法返回了 `undefined` 值键——只附加有值的键,或排查对应返回构造。
 - 折叠报「compaction 服务不可用」:根平面缺 `compaction-passive` 行。
 - 页面无「上下文」按钮:UI 行未在 web 组合生效,检查 `cordis.patch.yml` 与浏览器刷新。
+
+## 架构
+
+| 包 | 平面 | 职责 |
+|---|---|---|
+| `dsh-context-manager-service-luxi` | Host | 持久化存储（`context_manager` domain）+ **全局记录**（所有 preset 的根会话都自动记录，`summarize` 可选 LLM 提炼）+ Remote API：`list` / `count` / `record` / `remove` / `reorder` / `update` / `setGlobal` / `clear` / `listGlobal` / `compact` / `conversationList` / `foldRange` / `foldStatus` / `setInjectionText` / `getInjectionText` / `getSettings` / `setSettings`；根平面 `agent/pre-step` 监听器：执行排队的历史折叠、把记录/自定义文本注入真实消息流 |
+| `dsh-context-manager-agent-luxi`（`lib/index.js`） | Agent preset 行 | 仅保留**回退注入**：当服务端消息注入关闭（`injectIntoMessages: false`）时，把记录注入 system-prompt 快照。记录逻辑已退役（2026-08-17 起由服务端全局接管） |
+| `dsh-context-manager-ui-luxi` | **Web 层行**（不是 preset 行） | 浏览器 UI：输入框右下角「上下文」按钮 + 管理窗口（记录 / 真实对话 / 注入设置 三个标签页）。host 半是空操作，纯为把客户端 bundle 送进浏览器 |
+
+> ⚠️ **为什么 UI 必须是 Web 层行而不是 preset 行**：浏览器客户端 bundle 由 `clientModules` 服务发现，它只扫描 **loader 条目**（web 组合的行）；agent preset 的组成树是直接插入的作用域子树，**明确不在 `ctx.loader.entries()` 里**（见 `dsh-agent-presets/lib/types/mount.js` 注释），所以 preset 行里挂 `dsh.client` 永远不会被扫描到、bundle 永远 404、页面清单 `window.__DSH_BOOT__` 里也没有它。`dsh-context-manager-ui-luxi` 作为 web patch 行挂载后，UI 在**所有会话**都可用。
+
+> 💡 **记录范围**（2026-08-17 方案 B）：记录从 agent 行搬进 host 服务——**所有 preset 的根会话**都自动记录（子代理/工作流子会话不记录，避免污染与 token 浪费）。之前"只有 my-agent preset 会话才记录"的限制已消除。
 
 ## 数据模型
 
