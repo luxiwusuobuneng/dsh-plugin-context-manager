@@ -15,7 +15,7 @@ DeepSeek Harness 的自定义插件：自动记录每次对话交换，按优先
 - **手动折叠历史**（`foldRange` + `foldStatus`）：在「真实对话」里选一段消息范围，排队到**下一次对话开始时**由服务端在 `agent/pre-step` 内执行 `compaction.compactRegion()`，把旧文本真正折叠成一条摘要（追加式日志下唯一合法的移除方式）。折叠需在回合内执行，所以是「下一条消息后生效」。
 - **注入真实消息流**（`setInjectionText` / `getInjectionText` + `injectIntoMessages`）：置顶（⭐）记录、本会话记录、以及「注入设置」里的自定义文本，会作为一条真实消息**前置注入每次模型请求**（pre-step 修改 `messages`），而不是只放在辅助提示块里。
 
-## 安装（小白版·跟着做就行）
+## 安装（小白版·跟着做就行）不想动手干就把下面的agent版本喂给agent让它自己蹬
 
 **第 1 步:把插件文件放进 DSH 的插件目录**
 
