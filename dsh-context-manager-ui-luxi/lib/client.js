@@ -805,7 +805,7 @@ window.__ModuleLoader__.load({
       switch (info.status) {
         case "queued": return "已排队:发送下一条消息时执行…";
         case "running": return "正在折叠…";
-        case "done": return "✓ 已折叠为摘要";
+        case "done": return "✓ " + (info.message ?? "已折叠为摘要");
         case "failed": return "✗ " + (info.message ?? "折叠失败");
         default: return "";
       }
@@ -897,7 +897,7 @@ window.__ModuleLoader__.load({
         }
         const lo = Math.min(rangeStart, rangeEnd);
         const hi = Math.max(rangeStart, rangeEnd);
-        if (!window.confirm(`将第 ${lo}–${hi} 条消息折叠为一条摘要?\n这些消息会从模型上下文中移除(追加式日志,不可撤销),并在你发送下一条消息时执行。`)) return;
+        if (!window.confirm(`将第 ${lo}–${hi} 条消息折叠为摘要?\n任意条数都可以(自动切成平衡段逐段折叠);这些消息会从模型上下文中移除(追加式日志,不可撤销),并在你发送下一条消息时执行。`)) return;
         setBusy(true);
         setFoldInfo({ status: "queued" });
         setError("");
@@ -1018,7 +1018,7 @@ window.__ModuleLoader__.load({
           { className: "cm-foldbar" },
           react.createElement("span", null,
             rangeStart === null || rangeEnd === null
-              ? "选一段消息范围,折叠成摘要(旧文本从上下文移除)"
+              ? "选任意范围(几条到几十条都行,自动切平衡段),折叠成摘要(旧文本从上下文移除)"
               : `已选 ${Math.min(rangeStart, rangeEnd)} – ${Math.max(rangeStart, rangeEnd)}` + (foldInfo !== null ? " · " + foldStatusText(foldInfo) : "")
           ),
           react.createElement("button", {

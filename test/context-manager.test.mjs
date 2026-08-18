@@ -19,7 +19,7 @@ const agentPath = path.join(profilesNodeModules, "dsh-context-manager-agent-luxi
 const serviceUrl = new URL(`file://${servicePath.replace(/\\/g, "/")}`);
 const agentUrl = new URL(`file://${agentPath.replace(/\\/g, "/")}`);
 
-const { pruneRecords, renderInjectionMessage, shrinkRange, truncate: serviceTruncate, messageText, isRealUserMessage, ContextManagerService } = await import(serviceUrl.href);
+const { pruneRecords, renderInjectionMessage, shrinkRange, splitBalancedSegments, truncate: serviceTruncate, messageText, isRealUserMessage, ContextManagerService } = await import(serviceUrl.href);
 const { DEFAULT_CONFIG, renderInjectedRecords, truncate } = await import(agentUrl.href);
 
 // ── truncate ────────────────────────────────────────────────────────────────
@@ -205,6 +205,53 @@ test("shrinkRange snaps removed endpoints onto nearest survivors", () => {
 test("shrinkRange returns null when the whole span is gone", () => {
   const surface = [10, 20];
   assert.equal(shrinkRange(surface, 30, 40), null);
+});
+
+// ── splitBalancedSegments (任意范围自动切平衡段) ──────────────────────────────
+
+test("splitBalancedSegments keeps a fully balanced range as one segment", () => {
+  const nodes = [10, 20, 30, 40];
+  // every cut balanced
+  const before = () => true;
+  const after = () => true;
+  const { segments, remaining } = splitBalancedSegments(nodes, before, after, 10, 40, 20);
+  assert.equal(segments.length, 1);
+  assert.deepEqual(segments[0], { start: 10, end: 40 });
+  assert.equal(remaining, 0);
+});
+
+test("splitBalancedSegments splits into windowed segments and chains them", () => {
+  const nodes = [10, 20, 30, 40, 50, 60];
+  // trailing cut balanced only after 30 and 60
+  const after = (seq) => seq === 30 || seq === 60;
+  // leading cut balanced for 10 (first start) and 40 (node right after the
+  // balanced cut at 30 — chaining)
+  const before = (seq) => seq === 10 || seq === 40;
+  // 3-node windows force two segments instead of one giant span
+  const { segments, remaining } = splitBalancedSegments(nodes, before, after, 10, 60, 20, 3);
+  assert.equal(segments.length, 2);
+  assert.deepEqual(segments[0], { start: 10, end: 30 });
+  assert.deepEqual(segments[1], { start: 40, end: 60 });
+  assert.equal(remaining, 0);
+});
+
+test("splitBalancedSegments skips an unbalanced leading head", () => {
+  const nodes = [10, 20, 30];
+  const before = (seq) => seq !== 10;
+  const after = () => true;
+  const { segments } = splitBalancedSegments(nodes, before, after, 10, 30, 20);
+  assert.equal(segments.length, 1);
+  assert.deepEqual(segments[0], { start: 20, end: 30 });
+});
+
+test("splitBalancedSegments reports an unbalanceable tail as remaining", () => {
+  const nodes = [10, 20, 30, 40];
+  const before = (seq) => seq === 10;
+  const after = (seq) => seq === 20;
+  const { segments, remaining } = splitBalancedSegments(nodes, before, after, 10, 40, 20);
+  assert.equal(segments.length, 1);
+  assert.deepEqual(segments[0], { start: 10, end: 20 });
+  assert.equal(remaining, 2);
 });
 
 test("service truncate matches agent truncate semantics", () => {

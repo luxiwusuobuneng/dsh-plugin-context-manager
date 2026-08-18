@@ -16,6 +16,7 @@ import s from "@deepseek-ai/schemastery";
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
 import { deriveEventMessage } from "@deepseek-ai/dsh-session/surface";
+import { toolPairingBalancedBefore, toolPairingBalancedAfter } from "@deepseek-ai/dsh-compaction";
 import { BlockAssembler, createUserMessage } from "@deepseek-ai/dsh-llm";
 import { z } from "zod";
 
@@ -58,6 +59,13 @@ const contextManagerRowSchema = z.object({
     endSeq: z.number().int().nonnegative().optional(),
     auto: z.boolean().optional()
   })).optional(),
+  /** Durable latest fold status, including failure reasons (survives restart). */
+  foldStatus: z.object({
+    status: z.enum(["none", "queued", "running", "done", "failed"]),
+    requestId: z.string().min(1).optional(),
+    message: z.string().optional(),
+    at: nonNegativeSafeInteger
+  }).optional(),
   /** Runtime-tunable injection settings (overrides the static plugin config). */
   settings: z.object({
     maxInjected: z.number().int().min(0).max(100).optional(),
@@ -119,6 +127,50 @@ function shrinkRange(surface, startSeq, endSeq) {
   }
   if (start > end) return null;
   return { startSeq: start, endSeq: end };
+}
+
+/**
+ * Split an arbitrary user-selected [start, end] range into balanced segments
+ * the compaction engine will accept: each segment starts on a
+ * tool-pairing-balanced "before" cut and ends on a balanced "after" cut, so
+ * tool-call/result pairs are never split and open steps are never touched.
+ * Adjacent segments chain cleanly (an "after" cut equals the next node's
+ * "before" cut). Each segment spans at most `maxNodesPerSegment` nodes so one
+ * compaction never chews more than the engine can safely summarize; the
+ * unbalanced tail is reported via `remaining`.
+ */
+function splitBalancedSegments(nodes, beforeBalanced, afterBalanced, startSeq, endSeq, maxSegments, maxNodesPerSegment) {
+  const limit = Number.isInteger(maxNodesPerSegment) && maxNodesPerSegment > 0 ? maxNodesPerSegment : 20;
+  const slice = nodes.filter((seq) => seq >= startSeq && seq <= endSeq);
+  if (slice.length === 0) return { segments: [], remaining: 0, reason: "所选范围已不在真实对话中" };
+  const segments = [];
+  let cursor = 0;
+  let covered = 0;
+  while (cursor < slice.length && segments.length < maxSegments) {
+    // Advance to the first node whose leading cut is balanced.
+    while (cursor < slice.length && !beforeBalanced(slice[cursor])) cursor += 1;
+    if (cursor >= slice.length) break;
+    const windowEnd = Math.min(slice.length - 1, cursor + limit - 1);
+    // Prefer the LAST balanced trailing cut inside the window (bigger spans,
+    // fewer compactions), scanning backwards.
+    let endIndex = -1;
+    for (let index = windowEnd; index >= cursor; index -= 1) {
+      if (afterBalanced(slice[index])) {
+        endIndex = index;
+        break;
+      }
+    }
+    if (endIndex === -1) {
+      // No cut inside the window can close a segment: drop the start node.
+      cursor += 1;
+      continue;
+    }
+    segments.push({ start: slice[cursor], end: slice[endIndex] });
+    covered += endIndex - cursor + 1;
+    cursor = endIndex + 1;
+  }
+  const remaining = slice.length - covered;
+  return { segments, remaining: Math.max(0, remaining) };
 }
 
 /**
@@ -553,6 +605,9 @@ let ContextManagerService = (() => {
           if (row.pendingFold !== void 0 && typeof row.pendingFold.requestId === "string") {
             this.pendingFolds.set(sessionId, { requestId: row.pendingFold.requestId, start: row.pendingFold.start, end: row.pendingFold.end });
             this.foldStatuses.set(sessionId, { status: "queued", requestId: row.pendingFold.requestId, at: Date.now() });
+          } else if (row.foldStatus !== void 0 && row.foldStatus.status !== "none") {
+            // Persisted done/failed status survives the restart (diagnosis).
+            this.foldStatuses.set(sessionId, { ...row.foldStatus });
           }
           if (Array.isArray(row.foldHistory) && row.foldHistory.length > 0) {
             this.foldHistorys.set(sessionId, row.foldHistory.slice(-20));
@@ -580,13 +635,7 @@ let ContextManagerService = (() => {
               if (compaction === void 0) {
                 this.reportFoldResult(sessionId, pending.requestId, new Error("compaction 服务不可用(根平面未挂载被动压缩实例)"));
               } else {
-                try {
-                  await compaction.compactRegion(pending.start, pending.end, agent, signal);
-                  this.reportFoldResult(sessionId, pending.requestId);
-                  this.afterFold(sessionId, pending);
-                } catch (error) {
-                  this.reportFoldResult(sessionId, pending.requestId, error);
-                }
+                await this.executeFoldSegments(sessionId, pending, compaction, agent, signal);
               }
             }
           } catch (error) {
@@ -1083,8 +1132,12 @@ let ContextManagerService = (() => {
     /** Latest fold outcome for one session: none / queued / running / done / failed. */
     async foldStatus(sessionId) {
       this.requireString(sessionId, "sessionId");
-      const status = this.foldStatuses.get(sessionId);
-      return status ?? { status: "none" };
+      const live = this.foldStatuses.get(sessionId);
+      if (live !== void 0 && live.status !== "none") return live;
+      // Fall back to the persisted status so failure reasons survive restarts.
+      const row = this.table?.get(sessionId);
+      if (row?.foldStatus !== void 0 && row.foldStatus.status !== "none") return row.foldStatus;
+      return { status: "none" };
     }
 
     /** Set the per-session custom text injected into every model step's real message stream. */
@@ -1211,16 +1264,79 @@ let ContextManagerService = (() => {
       return pending;
     }
 
-    /** Record the outcome of one fold for the browser status. */
-    reportFoldResult(sessionId, requestId, error) {
+    /**
+     * Execute a queued fold. The user-selected range may span ANY number of
+     * messages: it is split into balanced segments (tool-call pairs never
+     * split, open steps never touched) and each segment is compacted in turn.
+     * Partial progress and the failure reason are reported and persisted.
+     */
+    async executeFoldSegments(sessionId, pending, compaction, agent, signal) {
+      const session = agent?.session;
+      const surface = session?.surface?.nodes ?? [];
+      if (session === void 0) {
+        this.reportFoldResult(sessionId, pending.requestId, new Error("会话不可用"));
+        return;
+      }
+      const beforeBalanced = (seq) => {
+        try {
+          return toolPairingBalancedBefore(session, seq);
+        } catch {
+          return false;
+        }
+      };
+      const afterBalanced = (seq) => {
+        try {
+          return toolPairingBalancedAfter(session, seq);
+        } catch {
+          return false;
+        }
+      };
+      const { segments, remaining } = splitBalancedSegments(surface, beforeBalanced, afterBalanced, pending.start, pending.end, 20, 20);
+      if (segments.length === 0) {
+        this.reportFoldResult(sessionId, pending.requestId,
+          new Error("所选范围无法切出平衡边界(范围已不在对话中,或全是未闭合的工具调用)"));
+        return;
+      }
+      let folded = 0;
+      try {
+        for (const segment of segments) {
+          await compaction.compactRegion(segment.start, segment.end, agent, signal);
+          folded += 1;
+        }
+        const extra = remaining > 0
+          ? `已折叠 ${folded} 段;还有 ${remaining} 条消息超出单次上限,可再选一次继续折`
+          : `已折叠 ${folded} 段`;
+        this.reportFoldResult(sessionId, pending.requestId, void 0, extra);
+        this.afterFold(sessionId, pending);
+      } catch (error) {
+        const progress = folded > 0 ? `已折叠 ${folded} 段后失败: ` : "";
+        this.reportFoldResult(sessionId, pending.requestId,
+          new Error(progress + (error instanceof Error ? error.message : String(error))));
+        if (folded > 0) this.afterFold(sessionId, pending);
+      }
+    }
+
+    /** Record the outcome of one fold for the browser status (persisted). */
+    reportFoldResult(sessionId, requestId, error, extra) {
       const status = error === void 0
-        ? { status: "done", requestId, at: Date.now() }
+        ? { status: "done", requestId, at: Date.now(), message: typeof extra === "string" ? extra : void 0 }
         : { status: "failed", requestId, at: Date.now(), message: error instanceof Error ? error.message : String(error) };
       this.foldStatuses.set(sessionId, status);
+      // Persist so failure reasons survive restarts and can be diagnosed later.
+      try {
+        const row = this.table?.get(sessionId);
+        if (row !== void 0) {
+          const clean = { status: status.status, requestId: status.requestId, at: status.at };
+          if (status.message !== void 0) clean.message = status.message;
+          void this.table.put(sessionId, { ...row, foldStatus: clean });
+        }
+      } catch (persistError) {
+        this.ctx.logger.warn(`context-manager: fold status persist failed: ${persistError instanceof Error ? persistError.message : String(persistError)}`);
+      }
       if (error !== void 0) {
         this.ctx.logger.warn(`context-manager: fold ${requestId} failed: ${status.message}`);
       } else {
-        this.ctx.logger.info(`context-manager: fold ${requestId} completed for ${sessionId}`);
+        this.ctx.logger.info(`context-manager: fold ${requestId} completed for ${sessionId}${typeof extra === "string" ? ` (${extra})` : ""}`);
       }
     }
 
@@ -1357,4 +1473,4 @@ let ContextManagerService = (() => {
   };
 })();
 
-export { ContextManagerService, ContextManagerService as default, contextManagerDomainSpec, contextManagerRecordSchema, contextManagerRowSchema, pruneRecords, renderInjectionMessage, shrinkRange, truncate, messageText, isRealUserMessage };
+export { ContextManagerService, ContextManagerService as default, contextManagerDomainSpec, contextManagerRecordSchema, contextManagerRowSchema, pruneRecords, renderInjectionMessage, shrinkRange, splitBalancedSegments, truncate, messageText, isRealUserMessage };
