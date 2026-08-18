@@ -27,84 +27,118 @@ DeepSeek Harness 的自定义插件：自动记录每次对话交换，按优先
 - **手动折叠历史**（`foldRange` + `foldStatus`）：在「真实对话」里选一段消息范围，排队到**下一次对话开始时**由服务端在 `agent/pre-step` 内执行 `compaction.compactRegion()`，把旧文本真正折叠成一条摘要（追加式日志下唯一合法的移除方式）。折叠需在回合内执行，所以是「下一条消息后生效」。
 - **注入真实消息流**（`setInjectionText` / `getInjectionText` + `injectIntoMessages`）：置顶（⭐）记录、本会话记录、以及「注入设置」里的自定义文本，会作为一条真实消息**前置注入每次模型请求**（pre-step 修改 `messages`），而不是只放在辅助提示块里。
 
-## 安装 / 升级
+## 安装（小白版·跟着做就行）
 
-```powershell
-# 从本目录执行：把两个包同步到运行实例的 profiles\node_modules
-.\install.ps1
+**第 1 步:把插件文件放进 DSH 的插件目录**
+
+1. 打开这个文件夹:`C:\Users\你的用户名\.dsh\profiles\node_modules`(没有 `node_modules` 文件夹就新建一个);
+2. 把本仓库里的 **三个文件夹** 整个复制进去:
+   - `dsh-context-manager-service-luxi`
+   - `dsh-context-manager-agent-luxi`
+   - `dsh-context-manager-ui-luxi`
+3. 复制完,`node_modules` 里应该有这三个同名文件夹,里面各有一个 `package.json`,就对了。
+
+> 偷懒法:在本仓库目录双击运行 `install.ps1`(PowerShell 里执行 `.\install.ps1`),它会自动帮你复制。如果它提示「未安装到」某包,说明第一步的目录没放对。
+
+**第 2 步:告诉 DSH 要用这三个插件(只做一次)**
+
+1. 用记事本打开文件:`C:\Users\你的用户名\.dsh\profiles\web\cordis.patch.yml`;
+2. 把下面这一整段**粘到文件末尾**(如果文件里已经有 `- insert:` 开头的内容,把里面三行插件并进去,别重复 `- insert:`):
+
+```yaml
+- insert:
+    - id: compaction-passive
+      name: '@deepseek-ai/dsh-compaction-basic'
+      config:
+        auto: false
+    - id: context-manager
+      name: 'dsh-context-manager-service-luxi'
+      config:
+        maxRecordsPerSession: 200
+        injectIntoMessages: true
+        maxInjectionChars: 800
+        maxInjected: 5
+        maxGlobalInjected: 3
+        maxCharsPerRecord: 200
+        summarize: true
+    - id: context-manager-ui
+      name: 'dsh-context-manager-ui-luxi'
 ```
 
-> ⚠️ **重要**：Service 和 Agent 插件是 DSH **进程启动时**加载的，改代码后必须**重启 DSH** 才生效（浏览器端 UI 刷新页面即可）。`install.ps1` 结束时也会提醒你。
+3. 保存文件。
 
-安装后的接线（首次安装才需要，升级不用动）：
+**第 3 步:重启 DSH,打开界面**
 
-1. **Host 行** —— `%USERPROFILE%\.dsh\profiles\web\cordis.patch.yml`：
+1. 关掉 DSH,重新启动;
+2. 打开网页版对话界面,看输入框右下角有没有一个 **「上下文」** 按钮;
+3. 点它,弹出管理窗口 = 安装成功 ✅
 
-   ```yaml
-   - insert:
-       - id: compaction-passive
-         name: '@deepseek-ai/dsh-compaction-basic'
-         config:
-           auto: false   # 根平面被动压缩引擎：无自动触发，仅供本服务的 compact/fold 调用
-       - id: context-manager
-         name: 'dsh-context-manager-service-luxi'
-         config:
-           maxRecordsPerSession: 200
-           injectIntoMessages: true
-           maxInjectionChars: 800
-           maxInjected: 5
-           maxGlobalInjected: 3
-           maxCharsPerRecord: 200
-   ```
+> 出问题先看:文件路径对不对、`cordis.patch.yml` 有没有保存、DSH 有没有真重启。还不行就把报错发给 AI 帮你查。
 
-   > ⚠️ **为什么必须有 `compaction-passive` 行**：浏览器按钮和服务端的折叠/压缩需要 `compaction` 在**根平面**可解析，而 `dsh-web-app` bundle 把根平面默认的 `compaction-basic` 禁用掉了（自动压缩移进了 agent preset 的隔离 realm）。这行挂一个 `auto: false` 的**第二实例**——只响应显式调用，绝不自动压缩，因此不会和 preset 里的自动实例打架。
-   >
-   > **服务端对 `compaction` 是可选依赖**（`ctx.get` 运行时读取，不在 inject 里）：万一这行被删，DSH 依然能正常启动、记录照常工作，只有压缩/折叠按钮报「compaction 服务不可用」。2026-08-16 那次 `dsh web` 启动失败（`pending (waiting for service: compaction)`）正是因为它曾是硬依赖且根平面没有实例——这个坑已经根除。
+## 安装 / 升级（给 AI 的精确操作手册）
 
-   还必须在同一文件里加 **UI 行**（让浏览器能加载管理窗口）：
+**目标**:把本仓库的三个 npm 包安装进 DeepSeek Harness 运行实例,并在 web 组合中接线三个插件行。
 
-   ```yaml
-       - id: context-manager-ui
-         name: 'dsh-context-manager-ui-luxi'
-   ```
+**环境变量**:`DSH_HOME` 未设置时使用 `%USERPROFILE%\.dsh`(Windows)。下文中 `<DSH>` = `${USERPROFILE}\.dsh`。
 
-   三者合起来：
+**步骤 1 — 同步包文件**
 
-   ```yaml
-   - insert:
-       - id: compaction-passive
-         name: '@deepseek-ai/dsh-compaction-basic'
-         config:
-           auto: false
-       - id: context-manager
-         name: 'dsh-context-manager-service-luxi'
-         config:
-           maxRecordsPerSession: 200
-           injectIntoMessages: true
-           maxInjectionChars: 800
-           maxInjected: 5
-           maxGlobalInjected: 3
-           maxCharsPerRecord: 200
-           summarize: true          # LLM 提炼每条交换的总结（false = 纯截断）
-           maxSummaryChars: 400
-           maxDescriptionChars: 200
-           summarizeTimeoutMs: 20000
-           summarizeMaxInputChars: 6000
-           summarizeMaxOutputTokens: 300
-       - id: context-manager-ui
-         name: 'dsh-context-manager-ui-luxi'
-   ```
+把以下三个目录**完整复制**(含子文件,覆盖同名文件)到 `<DSH>\profiles\node_modules\`:
 
-2. **Agent 预设行** —— 可选。记录已由服务端全局接管，这行只负责**回退注入**（`injectIntoMessages: false` 时才生效），不挂也可以：
+| 源(仓库内) | 目标 |
+|---|---|
+| `dsh-context-manager-service-luxi\` | `<DSH>\profiles\node_modules\dsh-context-manager-service-luxi\` |
+| `dsh-context-manager-agent-luxi\` | `<DSH>\profiles\node_modules\dsh-context-manager-agent-luxi\` |
+| `dsh-context-manager-ui-luxi\` | `<DSH>\profiles\node_modules\dsh-context-manager-ui-luxi\` |
 
-   ```yaml
-   - id: context-manager-agent
-     name: 'dsh-context-manager-agent-luxi'
-     config:
-       maxInjected: 5          # 回退注入的当前会话记录条数（服务端消息注入关闭时生效）
-       maxGlobalInjected: 3    # 回退注入的跨会话置顶记录条数
-       maxCharsPerRecord: 200  # 每条记录注入 prompt 时的字符预算
-   ```
+等价命令(仓库根目录,PowerShell):`powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`
+`install.ps1` 对不存在的目标目录输出 `[SKIP]` 并继续——SKIP 即代表该包尚未安装,需先执行步骤 2 的接线并重启后重试或手工创建目录。
+
+**步骤 2 — 接线 cordis.patch.yml(仅首次安装)**
+
+编辑 `<DSH>\profiles\web\cordis.patch.yml`(UTF-8,不存在则创建)。向 `insert` 列表**追加**三个条目,不得覆盖现有条目;若文件尚无 `- insert:`,先写 `- insert:` 作为键。追加内容:
+
+```yaml
+        - id: compaction-passive
+          name: '@deepseek-ai/dsh-compaction-basic'
+          config:
+            auto: false
+        - id: context-manager
+          name: 'dsh-context-manager-service-luxi'
+          config:
+            maxRecordsPerSession: 200
+            injectIntoMessages: true
+            maxInjectionChars: 800
+            maxInjected: 5
+            maxGlobalInjected: 3
+            maxCharsPerRecord: 200
+            summarize: true
+            maxSummaryChars: 400
+            maxDescriptionChars: 200
+            summarizeTimeoutMs: 20000
+            summarizeMaxInputChars: 6000
+            summarizeMaxOutputTokens: 300
+        - id: context-manager-ui
+          name: 'dsh-context-manager-ui-luxi'
+```
+
+约束与原因:
+- `compaction-passive` 必须存在:浏览器折叠/压缩按钮需要根平面可解析 `compaction` 服务;该行 `auto: false` 只响应显式调用,不会与 preset 内自动压缩实例冲突。服务端对它是可选依赖(运行时 `ctx.get`),缺行时只影响折叠按钮,不影响记录。
+- UI 行必须在 **web 组合**(loader 条目)而非 agent preset:preset 行不被 `clientModules` 扫描,挂那里 bundle 会 404。
+- 可选:agent preset 行 `dsh-context-manager-agent-luxi`(仅回退注入,`injectIntoMessages: false` 时生效),不挂不影响功能。
+
+**步骤 3 — 重启与验证**
+
+1. 完全停止并重新启动 DSH(Service/Agent 是进程启动时加载,热重载无效);
+2. 浏览器**刷新页面**(客户端 bundle 每次请求从磁盘读取,无需重建);
+3. 验证:输入框右下角出现「上下文」按钮,点击打开管理窗口;记录页在对话后出现自动记录;注入设置页可保存自定义文本。
+
+**升级**:仅改动包内代码时,重复步骤 1 与步骤 3(步骤 2 只做一次)。Service 改动必须重启 DSH;纯 UI(`client.js`)改动刷新页面即可。
+
+**故障排查**:
+- `typert gateway: ... business result failed boundary validation`:Remote 方法返回了 `undefined` 值键——只附加有值的键,或排查对应返回构造。
+- 折叠报「compaction 服务不可用」:根平面缺 `compaction-passive` 行。
+- 页面无「上下文」按钮:UI 行未在 web 组合生效,检查 `cordis.patch.yml` 与浏览器刷新。
 
 ## 数据模型
 
