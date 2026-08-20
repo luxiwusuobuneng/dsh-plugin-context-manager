@@ -1,0 +1,43 @@
+# dsh-plugin-context-manager — DeepSeek Harness wiring.
+#
+# Paste this file's `insert:` block into your web composition
+# (`<DSH_HOME>\profiles\web\cordis.patch.yml`) after installing the three
+# package folders from this repository into `profiles\node_modules`.
+#
+# Why `compaction-passive` exists: the context-manager service lives on the
+# HOST plane (the browser Remote gateway resolves receiver services from the
+# host root), and its fold/compact buttons need `compaction` resolvable there.
+# `auto: false` keeps the engine trigger-free — it only acts when the service
+# explicitly calls compactRegion(). Automatic compaction stays with your
+# agent presets.
+#
+# `context-manager-ui` must ride a WEB-profile row, not an agent-preset row:
+# clientModules only discovers client bundles from loader entries.
+- insert:
+    - id: compaction-passive
+      name: '@deepseek-ai/dsh-compaction-basic'
+      config:
+        auto: false
+
+    - id: context-manager
+      name: 'dsh-context-manager-service-luxi'
+      config:
+        maxRecordsPerSession: 200
+        # Inject pinned records + custom text into the REAL message stream of
+        # every model step (pre-step channel). When true, the agent row skips
+        # its legacy system-prompt injection to avoid duplication.
+        injectIntoMessages: true
+        maxInjectionChars: 800
+        maxInjected: 5
+        maxGlobalInjected: 3
+        maxCharsPerRecord: 200
+        # GLOBAL recording: every ROOT session's exchanges become records.
+        summarize: true
+        maxSummaryChars: 400
+        maxDescriptionChars: 200
+        summarizeTimeoutMs: 20000
+        summarizeMaxInputChars: 6000
+        summarizeMaxOutputTokens: 300
+
+    - id: context-manager-ui
+      name: 'dsh-context-manager-ui-luxi'

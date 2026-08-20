@@ -1,0 +1,18 @@
+{
+  "name": "dsh-plugin-context-manager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DeepSeek Harness context manager: auto-records every turn, injects priority-sorted memory and pinned cross-session notes into each model request, and folds real conversation history to save tokens.",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "context-manager",
+    "memory"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "platform": "web" }
+  }
+}
