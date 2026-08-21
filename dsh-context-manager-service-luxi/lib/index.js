@@ -915,6 +915,7 @@ let ContextManagerService = (() => {
 
     /** Append one exchange summary at the END (least important). */
     async record(sessionId, summary, description, startSeq, endSeq, metadata = {}) {
+      this.requireString(sessionId, "sessionId");
       if (typeof summary !== "string" || summary.trim().length === 0) {
         throw new TypeError("context-manager: summary must be a non-empty string");
       }
@@ -1022,6 +1023,7 @@ let ContextManagerService = (() => {
 
     /** Drop every record of one session (global pins included). */
     async clear(sessionId) {
+      this.requireString(sessionId, "sessionId");
       const row = this.table?.get(sessionId);
       if (row === void 0) return { cleared: 0 };
       const cleared = row.records.length;

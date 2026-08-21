@@ -1104,6 +1104,7 @@ window.__ModuleLoader__.load({
 
     function InjectionPanel(props) {
       const [text, setText] = react.useState("");
+      const [savedText, setSavedText] = react.useState("");
       const [loaded, setLoaded] = react.useState(false);
       const [busy, setBusy] = react.useState(false);
       const [message, setMessage] = react.useState("");
@@ -1120,6 +1121,7 @@ window.__ModuleLoader__.load({
           if (!alive) return;
           if (res.ok) {
             setText(res.value.text ?? "");
+            setSavedText(res.value.text ?? "");
             setLoaded(true);
           }
         }).catch(() => {});
@@ -1137,6 +1139,7 @@ window.__ModuleLoader__.load({
         setBusy(true);
         setMessage("");
         rpc("setInjectionText", { sessionId: props.sessionId, text }).then((res) => {
+          if (res.ok) setSavedText(text);
           setMessage(res.ok ? "已保存,下一轮对话开始生效" : (res.error?.message ?? "保存失败"));
         }).catch((cause) => {
           setMessage(cause instanceof Error ? cause.message : String(cause));
@@ -1225,8 +1228,7 @@ window.__ModuleLoader__.load({
                   ? react.createElement("div", { className: "cm-preview-note cm-preview-note-off" }, "⚠ 消息注入当前已关闭(设置里关了开关),此预览内容不会真正注入")
                   : null,
                 (() => {
-                  const customPart = (preview.parts ?? []).find((part) => part.label.includes("自定义注入"));
-                  const unsaved = customPart !== void 0 && text.trim() !== customPart.text;
+                  const unsaved = text.trim() !== savedText.trim();
                   return unsaved
                     ? react.createElement("div", { className: "cm-preview-note" }, "⚠ 文本框有未保存的修改——预览显示的是已保存的内容")
                     : null;

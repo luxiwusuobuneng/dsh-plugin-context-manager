@@ -77,16 +77,12 @@ function apply(ctx, config = {}) {
 
   // The host service injects the records into the REAL message stream
   // (pre-step channel, service config `injectIntoMessages`). When that
-  // channel is active, skip the legacy system-prompt injection so the
-  // records do not appear twice in the model input. When it is off (or the
-  // service is down), this legacy channel keeps working as the fallback.
-  let messageInjectionActive = false;
-  try {
-    messageInjectionActive = service?.messageInjectionActive?.() === true;
-  } catch {
-    messageInjectionActive = false;
-  }
-  if (messageInjectionActive) return;
+  // channel is active, the legacy system-prompt injection renders nothing so
+  // the records do not appear twice. The check runs INSIDE `text()` on every
+  // step (not once at startup), so a runtime `setSettings(false)` flips the
+  // fallback on immediately, and re-enabling the real channel disables the
+  // fallback again — no "off but nothing injects" / "on but double-injects"
+  // windows in either direction.
 
   // Inject the priority-ordered records into the runtime-context snapshot.
   systemPrompt.context({
@@ -96,6 +92,11 @@ function apply(ctx, config = {}) {
       if (currentSession === void 0) return "";
       const target = service ?? ctx.get("contextManager");
       if (target === void 0) return "";
+      try {
+        if (target.messageInjectionActive?.() === true) return "";
+      } catch {
+        // Treat an unreadable flag as "fallback on" (same as below).
+      }
       // Hard requirement: this text runs inside the system-prompt pipeline on
       // every step, and a throwing context text kills the whole turn (seen in
       // the hot-reload window where the host service's storage domain was
