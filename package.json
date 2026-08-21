@@ -12,7 +12,6 @@
     "memory"
   ],
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
-    "client": { "platform": "web" }
+    "bundle": { "patch": "./cordis.patch.yml" }
   }
 }
