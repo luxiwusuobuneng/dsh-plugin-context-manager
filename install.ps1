@@ -1,6 +1,8 @@
-﻿# install.ps1 - 把 context-manager 两个包同步到运行实例的 profiles\node_modules
+﻿# install.ps1 - 把 context-manager 三个包同步到运行实例的 profiles\node_modules
 #
 # 用法:  .\install.ps1
+# 注意:  本脚本只是「同步脚本」:只负责把三个包复制进 profiles\node_modules,
+#        不会修改 cordis.patch.yml —— 接线(wiring)需要按 README 手动添加/确认。
 # 注意:  同步完成后必须重启 DSH，Service/Agent 代码才会生效（浏览器刷新页面即可看到新 UI）。
 # 注意:  本文件必须保持 UTF-8 带 BOM 编码；Windows PowerShell 5.1 会把无 BOM 的
 #        .ps1 按 ANSI(GBK) 解析，中文注释/字符串会导致解析失败。

@@ -105,7 +105,11 @@ function apply(ctx, config = {}) {
       try {
         return renderInjectedRecords(
           target.peekRecords(currentSession.id),
-          target.peekGlobalRecords(),
+          // Scope-aware pins (project-scoped stay inside their cwd); older
+          // service copies only expose peekGlobalRecords, so degrade safely.
+          typeof target.peekScopedRecords === "function"
+            ? target.peekScopedRecords(currentSession.id)
+            : target.peekGlobalRecords(),
           cfg
         );
       } catch (error) {

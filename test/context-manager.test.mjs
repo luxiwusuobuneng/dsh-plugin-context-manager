@@ -256,6 +256,23 @@ test("splitBalancedSegments reports an unbalanceable tail as remaining", () => {
   assert.equal(remaining, 2);
 });
 
+test("renderInjectionMessage caps the total message including headers and markers", () => {
+  const long = "长".repeat(300);
+  const out = renderInjectionMessage([{ summary: long }, { summary: long }], [{ summary: long }], "规则".repeat(50), { ...injectCfg, maxInjectionChars: 60 });
+  const text = out.content[0].text;
+  // hard limit = total + 4 (separator slack); the custom part must survive whole
+  assert.ok(text.length <= 64);
+  assert.ok(text.includes("自定义注入"));
+});
+
+test("renderInjectionMessage never truncates the custom injection in the final assembly", () => {
+  const long = "长".repeat(200);
+  const custom = "人设规则:那现在你是个萝莉";
+  const out = renderInjectionMessage([{ summary: long }], [{ summary: long }], custom, { ...injectCfg, maxInjectionChars: 120 });
+  const text = out.content[0].text;
+  assert.ok(text.includes(custom));
+});
+
 test("service truncate matches agent truncate semantics", () => {
   assert.equal(serviceTruncate("你好", 10), "你好");
   assert.equal(serviceTruncate("a".repeat(50), 10), "a".repeat(10) + "…");

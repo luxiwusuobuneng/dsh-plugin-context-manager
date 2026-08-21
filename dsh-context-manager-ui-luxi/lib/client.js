@@ -373,8 +373,18 @@ window.__ModuleLoader__.load({
 
       const toggleGlobal = (record) => {
         if (busy) return;
+        const pinning = !(record.global === true);
+        let scope = "global";
+        if (pinning) {
+          const choice = window.prompt(
+            "置顶作用域:\n  g = 全局(所有会话都能看到)\n  p = 同项目(仅相同工作目录的会话)\n默认全局",
+            "g"
+          );
+          if (choice === null) return;
+          scope = (choice.trim().toLowerCase() === "p" || choice.trim().toLowerCase() === "project") ? "project" : "global";
+        }
         setBusy(true);
-        rpc("setGlobal", { sessionId: props.sessionId, id: record.id, global: !(record.global === true) }).then((res) => {
+        rpc("setGlobal", { sessionId: props.sessionId, id: record.id, global: pinning, scope }).then((res) => {
           if (res.ok) load();
           else setError(res.error?.message ?? "置顶失败");
         }).catch((cause) => {
@@ -700,8 +710,10 @@ window.__ModuleLoader__.load({
                                 : null,
                                 react.createElement("div", { className: "cm-meta" },
                                 react.createElement("span", { className: "cm-source-badge " + (record.trust === "low" ? "cm-source-low" : record.source === "user" ? "cm-source-user" : "cm-source-agent") }, sourceLabel(record) + " · " + trustLabel(record)),
-                                react.createElement("span", null, "质量 " + (record.qualityScore ?? "-") + "/100"),
-                                record.scope === "global" || record.global === true ? react.createElement("span", { className: "cm-global-badge" }, "跨会话") : null,
+                                react.createElement("span", { title: "摘要完整度估计(按内容长度估算,不代表内容正确性)" }, "完整度 " + (record.qualityScore ?? "-") + "/100"),
+                                record.scope === "project"
+                                  ? react.createElement("span", { className: "cm-global-badge" }, "同项目")
+                                  : record.scope === "global" || record.global === true ? react.createElement("span", { className: "cm-global-badge" }, "跨会话") : null,
                                 typeof record.expiresAt === "number" ? react.createElement("span", null, "到期 " + formatTime(record.expiresAt)) : null
                               ),
                               react.createElement("div", { className: "cm-why" },
