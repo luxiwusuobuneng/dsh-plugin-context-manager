@@ -370,6 +370,9 @@ function renderInjectionMessage(records, globalRecords, injectionText, cfg) {
   if (customText.length > 0) {
     const bodyCap = Math.max(0, Math.min(customBodyBudget, total - customHeader.length));
     customPart = customHeader + truncate(customText, bodyCap);
+    // Pathological configs (total smaller than the fixed header) can only fit
+    // a truncated custom part; cap it so the total stays bounded.
+    if (customPart.length > total + 1) customPart = truncate(customPart, total);
   }
   const remaining = Math.max(0, total - customPart.length);
   const sessionLines = (records ?? []).slice(0, cfg.maxInjected).map((record, index) => {
@@ -903,35 +906,58 @@ let ContextManagerService = (() => {
      */
     async remove(sessionId, id, alsoFold) {
       this.requireString(id, "id");
-      const row = this.requireRow(sessionId);
-      const target = row.records.find((record) => record.id === id);
-      const next = row.records.filter((record) => record.id !== id);
-      const removed = next.length !== row.records.length;
-      if (removed) await this.table.put(sessionId, { ...row, records: next });
-      let foldQueued = false;
-      let requestId = void 0;
-      let foldError = void 0;
-      if (removed && alsoFold === true && target !== void 0 &&
-          typeof target.startSeq === "number" && typeof target.endSeq === "number") {
-        try {
-          if (this.ctx.agents.get(sessionId) === void 0) {
-            throw new Error(`context-manager: no live agent for session ${sessionId}`);
-          }
-          if (this.pendingFolds.has(sessionId)) {
-            throw new Error("context-manager: 已有排队中的折叠任务,等下一次对话执行后再试");
-          }
-          requestId = randomUUID();
-          this.pendingFolds.set(sessionId, { requestId, start: target.startSeq, end: target.endSeq });
-          this.foldStatuses.set(sessionId, { status: "queued", requestId, at: Date.now() });
-          foldQueued = true;
-        } catch (error) {
-          foldError = error instanceof Error ? error.message : String(error);
-        }
+      if (alsoFold !== void 0 && typeof alsoFold !== "boolean") {
+        throw new TypeError("context-manager: alsoFold must be a boolean");
       }
-      const result = { removed, foldQueued };
-      if (foldQueued && requestId !== void 0) result.requestId = requestId;
-      if (foldError !== void 0) result.foldError = foldError;
-      return result;
+      return await this.writeRow(sessionId, async (fresh) => {
+        const row = fresh ?? { session: this.sessionIdentity(sessionId), records: [] };
+        const target = row.records.find((record) => record.id === id);
+        const next = row.records.filter((record) => record.id !== id);
+        const removed = next.length !== row.records.length;
+        if (removed) await this.table.put(sessionId, { ...row, records: next });
+        let foldQueued = false;
+        let requestId = void 0;
+        let foldError = void 0;
+        if (removed && alsoFold === true && target !== void 0 &&
+            typeof target.startSeq === "number" && typeof target.endSeq === "number") {
+          try {
+            if (this.ctx.agents.get(sessionId) === void 0) {
+              throw new Error(`context-manager: no live agent for session ${sessionId}`);
+            }
+            if (this.pendingFolds.has(sessionId)) {
+              throw new Error("context-manager: 已有排队中的折叠任务,等下一次对话执行后再试");
+            }
+            requestId = randomUUID();
+            this.pendingFolds.set(sessionId, { requestId, start: target.startSeq, end: target.endSeq });
+            this.foldStatuses.set(sessionId, { status: "queued", requestId, at: Date.now() });
+            foldQueued = true;
+          } catch (error) {
+            foldError = error instanceof Error ? error.message : String(error);
+          }
+        }
+        const result = { removed, foldQueued };
+        if (foldQueued && requestId !== void 0) result.requestId = requestId;
+        if (foldError !== void 0) result.foldError = foldError;
+        return result;
+      });
+    }
+
+    /**
+     * Serialized row write (#M2): runs `mutator(freshRow)` on the putChain so
+     * UI writes never clobber concurrent fold/record writes. `mutator` gets the
+     * freshest row, performs its own table.put, and its return value resolves
+     * the returned promise.
+     */
+    writeRow(sessionId, mutator) {
+      const task = this.putChain.then(async () => {
+        const fresh = this.table?.get(sessionId);
+        return await mutator(fresh);
+      }).catch((error) => {
+        this.ctx.logger.warn(`context-manager: row write failed for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+        throw error;
+      });
+      this.putChain = task.then(() => {}, () => {});
+      return task;
     }
 
     /**
@@ -942,21 +968,23 @@ let ContextManagerService = (() => {
       if (!Array.isArray(orderedIds) || orderedIds.some((id) => typeof id !== "string" || id.length === 0)) {
         throw new TypeError("context-manager: orderedIds must be an array of non-empty strings");
       }
-      const row = this.requireRow(sessionId);
-      const byId = new Map(row.records.map((record) => [record.id, record]));
-      const ordered = [];
-      for (const id of orderedIds) {
-        const record = byId.get(id);
-        if (record === void 0) continue;
-        byId.delete(id);
-        ordered.push(record);
-      }
-      for (const record of row.records) {
-        if (byId.has(record.id)) ordered.push(record);
-      }
-      if (ordered.length !== row.records.length) throw new Error("context-manager: reorder dropped a record unexpectedly");
-      await this.table.put(sessionId, { ...row, records: ordered });
-      return { records: ordered.filter((record) => isRecordActive(record)).map(publicRecord) };
+      return await this.writeRow(sessionId, async (fresh) => {
+        const row = fresh ?? { session: this.sessionIdentity(sessionId), records: [] };
+        const byId = new Map(row.records.map((record) => [record.id, record]));
+        const ordered = [];
+        for (const id of orderedIds) {
+          const record = byId.get(id);
+          if (record === void 0) continue;
+          byId.delete(id);
+          ordered.push(record);
+        }
+        for (const record of row.records) {
+          if (byId.has(record.id)) ordered.push(record);
+        }
+        if (ordered.length !== row.records.length) throw new Error("context-manager: reorder dropped a record unexpectedly");
+        await this.table.put(sessionId, { ...row, records: ordered });
+        return { records: ordered.filter((record) => isRecordActive(record)).map(publicRecord) };
+      });
     }
 
     /** Append one exchange summary at the END (least important). */
@@ -1025,60 +1053,69 @@ let ContextManagerService = (() => {
       if (description !== void 0 && typeof description !== "string") {
         throw new TypeError("context-manager: description must be a string");
       }
-      const row = this.requireRow(sessionId);
-      let updated = false;
-      const next = row.records.map((record) => {
-        if (record.id !== id) return record;
-        updated = true;
-        const nextRecord = {
-          ...record,
-          ...summary === void 0 ? {} : { summary: summary.slice(0, 4000) },
-          ...description === void 0 ? {} : { description: description.slice(0, 2000) },
-          ...typeof metadata.source === "string" ? { source: metadata.source.slice(0, 40) } : {},
-          ...metadata.trust === "high" || metadata.trust === "medium" || metadata.trust === "low" ? { trust: metadata.trust } : {},
-          ...metadata.scope === "session" || metadata.scope === "project" || metadata.scope === "profile" || metadata.scope === "global" ? { scope: metadata.scope } : {},
-          ...typeof metadata.category === "string" ? { category: metadata.category.slice(0, 40) } : {},
-          ...Number.isSafeInteger(metadata.expiresAt) && metadata.expiresAt > Date.now() ? { expiresAt: metadata.expiresAt } : {},
-          ...summary !== void 0 ? {
-            summaryVersion: (record.summaryVersion ?? 1) + 1,
-            qualityScore: Math.min(100, Math.max(20, Math.round(summary.length / 4)))
-          } : {}
-        };
-        return nextRecord;
+      return await this.writeRow(sessionId, async (fresh) => {
+        const row = fresh ?? { session: this.sessionIdentity(sessionId), records: [] };
+        let updated = false;
+        const next = row.records.map((record) => {
+          if (record.id !== id) return record;
+          updated = true;
+          const nextRecord = {
+            ...record,
+            ...summary === void 0 ? {} : { summary: summary.slice(0, 4000) },
+            ...description === void 0 ? {} : { description: description.slice(0, 2000) },
+            ...typeof metadata.source === "string" ? { source: metadata.source.slice(0, 40) } : {},
+            ...metadata.trust === "high" || metadata.trust === "medium" || metadata.trust === "low" ? { trust: metadata.trust } : {},
+            ...metadata.scope === "session" || metadata.scope === "project" || metadata.scope === "profile" || metadata.scope === "global" ? { scope: metadata.scope } : {},
+            ...typeof metadata.category === "string" ? { category: metadata.category.slice(0, 40) } : {},
+            ...Number.isSafeInteger(metadata.expiresAt) && metadata.expiresAt > Date.now() ? { expiresAt: metadata.expiresAt } : {},
+            ...summary !== void 0 ? {
+              summaryVersion: (record.summaryVersion ?? 1) + 1,
+              qualityScore: Math.min(100, Math.max(20, Math.round(summary.length / 4)))
+            } : {}
+          };
+          return nextRecord;
+        });
+        if (!updated) throw new Error(`context-manager: no record with id ${id}`);
+        await this.table.put(sessionId, { ...row, records: next });
+        return { updated: true };
       });
-      if (!updated) throw new Error(`context-manager: no record with id ${id}`);
-      await this.table.put(sessionId, { ...row, records: next });
-      return { updated: true };
     }
 
     /** Pin or unpin one record across sessions, optionally scoped. */
     async setGlobal(sessionId, id, global, scope) {
       this.requireString(id, "id");
-      const row = this.requireRow(sessionId);
+      if (typeof global !== "boolean") throw new TypeError("context-manager: global must be a boolean");
       const targetScope = scope === "project" || scope === "profile" || scope === "session" ? scope : "global";
-      let updated = false;
-      const next = row.records.map((record) => {
-        if (record.id !== id) return record;
-        updated = true;
-        if (global === true) return { ...record, global: true, scope: targetScope };
-        // Unpin: drop the key instead of storing `global: false`.
-        const { global: _dropped, ...rest } = record;
-        return { ...rest, scope: rest.scope === "global" ? "session" : rest.scope };
+      return await this.writeRow(sessionId, async (fresh) => {
+        const row = fresh ?? { session: this.sessionIdentity(sessionId), records: [] };
+        let updated = false;
+        const next = row.records.map((record) => {
+          if (record.id !== id) return record;
+          updated = true;
+          if (global === true) return { ...record, global: true, scope: targetScope };
+          // Unpin: drop the key instead of storing `global: false`, and RESET any
+          // cross-session scope — a "project"/"profile" scope must not keep the
+          // record injected after unpinning (scope alone drives injection).
+          const { global: _dropped, scope: _scopeDropped, ...rest } = record;
+          return { ...rest, scope: "session" };
+        });
+        if (!updated) throw new Error(`context-manager: no record with id ${id}`);
+        await this.table.put(sessionId, { ...row, records: next });
+        // Never return an undefined-valued key (typert rejects them).
+        return global === true ? { global: true, scope: targetScope } : { global: false };
       });
-      if (!updated) throw new Error(`context-manager: no record with id ${id}`);
-      await this.table.put(sessionId, { ...row, records: next });
-      // Never return an undefined-valued key (typert rejects them).
-      return global === true ? { global: true, scope: targetScope } : { global: false };
     }
 
     /** Drop every record of one session (global pins included). */
     async clear(sessionId) {
       this.requireString(sessionId, "sessionId");
-      const row = this.table?.get(sessionId);
-      if (row === void 0) return { cleared: 0 };
-      const cleared = row.records.length;
-      await this.table.put(sessionId, { ...row, records: [] });
-      return { cleared };
+      return await this.writeRow(sessionId, async (fresh) => {
+        if (fresh === void 0) return { cleared: 0 };
+        // Count only ACTIVE records so the number matches the list/count badge.
+        const cleared = fresh.records.filter((record) => isRecordActive(record)).length;
+        await this.table.put(sessionId, { ...fresh, records: [] });
+        return { cleared };
+      });
     }
 
     /** Drop every record across ALL sessions (runtime settings row kept). */
@@ -1111,7 +1148,9 @@ let ContextManagerService = (() => {
       if (injected === null) return { text: "", parts: [], enabled };
       const text = messageText(injected);
       const parts = [];
-      const pattern = /【上下文管理·([^】]+)】/g;
+      // Label = the part before the first ｜, so markers like 来源/可信级别
+      // don't bloat the preview section titles.
+      const pattern = /【上下文管理·([^】｜]+)(?:｜[^】]*)?】/g;
       const sections = [];
       let match;
       while ((match = pattern.exec(text)) !== null) {
@@ -1253,10 +1292,12 @@ let ContextManagerService = (() => {
     async setInjectionText(sessionId, text) {
       this.requireString(sessionId, "sessionId");
       if (typeof text !== "string") throw new TypeError("context-manager: text must be a string");
-      const identity = this.sessionIdentity(sessionId);
-      const row = this.table?.get(sessionId) ?? { session: identity, records: [] };
-      await this.table.put(sessionId, { ...row, injectionText: text.slice(0, 4000) });
-      return { saved: true };
+      return await this.writeRow(sessionId, async (fresh) => {
+        const identity = this.sessionIdentity(sessionId);
+        const row = fresh ?? { session: identity, records: [] };
+        await this.table.put(sessionId, { ...row, injectionText: text.slice(0, 4000) });
+        return { saved: true };
+      });
     }
 
     /** Read the per-session custom injection text. */
@@ -1322,9 +1363,11 @@ let ContextManagerService = (() => {
       set("maxCharsPerRecord", 1, 2000);
       set("maxRecordsPerSession", 1, 10000);
       if (typeof patch.injectIntoMessages === "boolean") next.injectIntoMessages = patch.injectIntoMessages;
-      const row = this.table?.get(SETTINGS_KEY) ?? { session: { createdAt: Date.now() }, records: [] };
-      await this.table.put(SETTINGS_KEY, { ...row, records: row.records ?? [], settings: { ...(row.settings ?? {}), ...next } });
-      return { saved: true };
+      return await this.writeRow(SETTINGS_KEY, async (fresh) => {
+        const row = fresh ?? { session: { createdAt: Date.now() }, records: [] };
+        await this.table.put(SETTINGS_KEY, { ...row, records: row.records ?? [], settings: { ...(row.settings ?? {}), ...next } });
+        return { saved: true };
+      });
     }
 
     // ── internal (non-Remote) helpers for the pre-step executor ─────────

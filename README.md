@@ -26,7 +26,7 @@ DeepSeek Harness 的自定义插件：自动记录每次对话交换，按优先
    - `dsh-context-manager-ui-luxi`
 3. 复制完,`node_modules` 里应该有这三个同名文件夹,里面各有一个 `package.json`,就对了。
 
-> 偷懒法:在本仓库目录双击运行 `install.ps1`(PowerShell 里执行 `.\install.ps1`),它会自动帮你复制。如果它提示「未安装到」某包,说明第一步的目录没放对。
+> 偷懒法:在本仓库目录双击运行 `install.ps1`(PowerShell 里执行 `.\install.ps1`),它会自动帮你复制三个包。如果它提示 `[FAIL]` 某包,说明该包的源目录缺少 `package.json`(目录没放对)。
 
 **第 2 步:告诉 DSH 要用这三个插件(只做一次)**
 
@@ -80,7 +80,7 @@ DeepSeek Harness 的自定义插件：自动记录每次对话交换，按优先
 | `dsh-context-manager-ui-luxi\` | `<DSH>\profiles\node_modules\dsh-context-manager-ui-luxi\` |
 
 等价命令(仓库根目录,PowerShell):`powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`
-`install.ps1` 对不存在的目标目录输出 `[SKIP]` 并继续——SKIP 即代表该包尚未安装,需先执行步骤 2 的接线并重启后重试或手工创建目录。
+`install.ps1` 会自动创建目标目录并复制三个包;仅当某包源目录缺少 `package.json` 时才输出 `[FAIL]`——此时请检查第一步的目录摆放。该脚本只负责复制,**不修改 cordis.patch.yml**(接线需手动完成)。
 
 **步骤 2 — 接线 cordis.patch.yml(仅首次安装)**
 
