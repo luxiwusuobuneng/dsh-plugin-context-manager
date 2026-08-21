@@ -823,6 +823,7 @@ let ContextManagerService = (() => {
 
     /** List one session's records, stored order = priority. */
     async list(sessionId) {
+      this.requireString(sessionId, "sessionId");
       const records = this.peekRecords(sessionId);
       // Map each record's event seqs to 1-based surface positions so the UI
       // can show "对话第 X–Y 条消息" instead of raw (huge) event seqs.
@@ -843,6 +844,7 @@ let ContextManagerService = (() => {
 
     /** Lightweight count for dock badges and polling. */
     async count(sessionId) {
+      this.requireString(sessionId, "sessionId");
       const records = this.peekRecords(sessionId);
       return { count: records.length };
     }
@@ -955,7 +957,10 @@ let ContextManagerService = (() => {
       const appended = { session: identity, records: next };
       this.putChain = this.putChain.then(async () => {
         const fresh = this.table?.get(sessionId);
-        if (fresh !== void 0) await this.table.put(sessionId, { ...fresh, ...appended });
+        // Create the row when this session has never been written before
+        // (e.g. a brand-new session with no manual injection text): the first
+        // auto record must not be silently dropped.
+        await this.table.put(sessionId, { ...(fresh ?? { session: identity, records: [] }), ...appended });
       }).catch((error) => {
         this.ctx.logger.warn(`context-manager: record persist failed: ${error instanceof Error ? error.message : String(error)}`);
       });
@@ -1274,7 +1279,9 @@ let ContextManagerService = (() => {
 
     /** Whether the real-message injection channel is active (consulted by the agent row). */
     messageInjectionActive() {
-      return this.config.injectIntoMessages === true;
+      // Consult the EFFECTIVE config so a runtime setSettings(false) flips the
+      // agent row's fallback on, matching the pre-step channel exactly.
+      return this.effectiveConfig().injectIntoMessages === true;
     }
 
     /** Synchronous peek of the custom injection text for the pre-step path. */

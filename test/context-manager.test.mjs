@@ -166,9 +166,11 @@ test("renderInjectionMessage includes session records, globals and custom text",
   const out = renderInjectionMessage([{ summary: "会话甲" }], [{ summary: "置顶乙" }], "自定义规则", injectCfg);
   const text = out.content[0].text;
   assert.ok(text.includes("本会话记录"));
-  assert.ok(text.includes("1. 会话甲"));
+  assert.ok(text.includes("1. 【来源:自动记录"));
+  assert.ok(text.includes("会话甲"));
   assert.ok(text.includes("跨会话置顶"));
-  assert.ok(text.includes("1. 置顶乙"));
+  assert.ok(text.includes("1. 【来源:跨会话记录"));
+  assert.ok(text.includes("置顶乙"));
   assert.ok(text.includes("自定义注入"));
   assert.ok(text.includes("自定义规则"));
   assert.ok(out.content.length === 1 && out.content[0].type === "text");
