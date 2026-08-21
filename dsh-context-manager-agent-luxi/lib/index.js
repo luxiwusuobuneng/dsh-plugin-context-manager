@@ -36,13 +36,13 @@ function renderInjectedRecords(records, globalRecords, cfg) {
   const parts = [];
   if (records.length > 0) {
     const lines = records.slice(0, cfg.maxInjected).map((record, index) => {
-      return `${index + 1}. ${truncate(record.summary, cfg.maxCharsPerRecord)}`;
+      return `${index + 1}. 【来源:${record.source ?? "自动记录"}｜可信级别:${record.trust ?? "medium"}】 ${truncate(record.summary, cfg.maxCharsPerRecord)}`;
     });
     parts.push(`Context-manager priority records (most important first — keep these in mind while replying):\n${lines.join("\n")}`);
   }
   if (globalRecords.length > 0) {
     const lines = globalRecords.slice(0, cfg.maxGlobalInjected).map((record, index) => {
-      return `${index + 1}. ${truncate(record.summary, cfg.maxCharsPerRecord)}`;
+      return `${index + 1}. 【来源:${record.source ?? "跨会话记录"}｜可信级别:${record.trust ?? "medium"}】 ${truncate(record.summary, cfg.maxCharsPerRecord)}`;
     });
     parts.push(`Context-manager global records (pinned across sessions — always keep these in mind):\n${lines.join("\n")}`);
   }

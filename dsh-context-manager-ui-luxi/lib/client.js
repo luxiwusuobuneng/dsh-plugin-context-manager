@@ -131,6 +131,12 @@ window.__ModuleLoader__.load({
 .cm-fold-history-label{color:var(--dsw-alias-label-caption,#888)}
 .cm-fold-history-item{border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.25));border-radius:999px;padding:1px 8px}
 .cm-ok{color:#34c77b;font-size:12px}
+.cm-onboarding{margin:10px 16px 0;padding:10px 12px;border:1px solid rgba(74,125,255,.35);background:rgba(74,125,255,.10);border-radius:10px;color:var(--dsw-alias-label-secondary,#bbb);font-size:12px;line-height:1.6}
+.cm-onboarding strong{color:var(--dsw-alias-label-primary,#eee)}
+.cm-source-badge{border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.25));border-radius:999px;padding:1px 6px;font-size:10px}
+.cm-source-user{color:#34c77b}.cm-source-agent{color:#ffc400}.cm-source-low{color:#ff9f43}
+.cm-why{margin-top:6px;padding:6px 8px;border-left:2px solid var(--dsw-alias-state-business-primary,#4a7dff);background:rgba(74,125,255,.08);font-size:11px;color:var(--dsw-alias-label-secondary,#bbb);line-height:1.5}
+.cm-token-compare{padding:6px 16px;color:var(--dsw-alias-label-secondary,#bbb);font-size:12px;background:rgba(52,199,123,.08);border-top:1px solid rgba(52,199,123,.25)}
 `;
     const cssTag = "dsh-context-manager-ui-luxi";
     if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=\"" + cssTag + "\"]") === null) {
@@ -242,6 +248,18 @@ window.__ModuleLoader__.load({
       }
     }
 
+    function sourceLabel(record) {
+      if (record.source === "user") return "用户手动";
+      if (record.source === "agent-summary") return "模型总结";
+      if (record.source === "agent-fallback") return "总结失败回退";
+      if (record.source === "agent-truncated") return "截断回退";
+      return record.source ?? "自动记录";
+    }
+
+    function trustLabel(record) {
+      return record.trust === "high" ? "高可信" : record.trust === "low" ? "低可信" : "中可信";
+    }
+
     function exportMarkdown(records) {
       const lines = ["# 上下文记录", ""];
       records.forEach((record, index) => {
@@ -296,6 +314,9 @@ window.__ModuleLoader__.load({
       const [newSummary, setNewSummary] = react.useState("");
       const [newDescription, setNewDescription] = react.useState("");
       const [jumpTo, setJumpTo] = react.useState(null);
+      const [showGuide, setShowGuide] = react.useState(() => {
+        try { return window.localStorage.getItem("dsh-context-manager-guide-v1") !== "1"; } catch { return true; }
+      });
 
       const load = react.useCallback(() => {
         rpc("list", { sessionId: props.sessionId }).then((res) => {
@@ -542,6 +563,10 @@ window.__ModuleLoader__.load({
             react.createElement("button", { className: "cm-tab" + (tab === "conversation" ? " cm-tab-active" : ""), onClick: () => setTab("conversation") }, "真实对话"),
             react.createElement("button", { className: "cm-tab" + (tab === "injection" ? " cm-tab-active" : ""), onClick: () => setTab("injection") }, "注入设置")
           ),
+          showGuide ? react.createElement("div", { className: "cm-onboarding" },
+            react.createElement("strong", null, "快速上手："), "记录页管理长期重点；真实对话页查看/折叠模型上下文；注入设置页查看本轮实际注入内容。⭐ 全局记录会进入所有会话。",
+            react.createElement("button", { className: "cm-tool", style: { marginLeft: 8 }, onClick: () => { setShowGuide(false); try { window.localStorage.setItem("dsh-context-manager-guide-v1", "1"); } catch {} } }, "知道了")
+          ) : null,
           tab === "records" ? react.createElement(
             react.Fragment,
             null,
@@ -589,7 +614,8 @@ window.__ModuleLoader__.load({
                           rpc("record", {
                             sessionId: props.sessionId,
                             summary: newSummary,
-                            description: newDescription
+                            description: newDescription,
+                            metadata: { source: "user", trust: "high", category: "note" }
                           }).then((res) => {
                             if (res.ok) {
                               setNewSummary("");
@@ -671,7 +697,16 @@ window.__ModuleLoader__.load({
                               react.createElement("div", { className: "cm-summary" }, record.summary),
                               record.description !== void 0 && record.description.length > 0
                                 ? react.createElement("div", { className: "cm-desc" }, record.description)
-                                : null
+                                : null,
+                                react.createElement("div", { className: "cm-meta" },
+                                react.createElement("span", { className: "cm-source-badge " + (record.trust === "low" ? "cm-source-low" : record.source === "user" ? "cm-source-user" : "cm-source-agent") }, sourceLabel(record) + " · " + trustLabel(record)),
+                                react.createElement("span", null, "质量 " + (record.qualityScore ?? "-") + "/100"),
+                                record.scope === "global" || record.global === true ? react.createElement("span", { className: "cm-global-badge" }, "跨会话") : null,
+                                typeof record.expiresAt === "number" ? react.createElement("span", null, "到期 " + formatTime(record.expiresAt)) : null
+                              ),
+                              react.createElement("div", { className: "cm-why" },
+                                "注入原因：", record.global === true ? "已跨会话置顶，按全局注入上限进入每个会话。" : "当前优先级靠前，且未过期；注入设置会再按条数和字符预算筛选。"
+                              )
                             ),
                         react.createElement(
                           "div",
@@ -819,6 +854,8 @@ window.__ModuleLoader__.load({
       const [expanded, setExpanded] = react.useState({});
       const [busy, setBusy] = react.useState(false);
       const [foldInfo, setFoldInfo] = react.useState(null);
+      const [foldBeforeTokens, setFoldBeforeTokens] = react.useState(null);
+      const [foldAfterTokens, setFoldAfterTokens] = react.useState(null);
       const [highlightSeq, setHighlightSeq] = react.useState(null);
       const [foldHistory, setFoldHistory] = react.useState(null);
       const aliveRef = react.useRef(true);
@@ -900,6 +937,8 @@ window.__ModuleLoader__.load({
         if (!window.confirm(`将第 ${lo}–${hi} 条消息折叠为摘要?\n任意条数都可以(自动切成平衡段逐段折叠);这些消息会从模型上下文中移除(追加式日志,不可撤销),并在你发送下一条消息时执行。`)) return;
         setBusy(true);
         setFoldInfo({ status: "queued" });
+        setFoldBeforeTokens(state?.totalTokens ?? null);
+        setFoldAfterTokens(null);
         setError("");
         rpc("foldRange", { sessionId: props.sessionId, start: lo, end: hi }).then((res) => {
           if (!res.ok) {
@@ -925,6 +964,9 @@ window.__ModuleLoader__.load({
                 setFoldInfo(st.value);
                 setBusy(false);
                 load();
+                rpc("conversationList", { sessionId: props.sessionId }).then((after) => {
+                  if (after.ok) setFoldAfterTokens(after.value.totalTokens ?? null);
+                }).catch(() => {});
               } else {
                 setFoldInfo(st.value);
               }
@@ -953,6 +995,11 @@ window.__ModuleLoader__.load({
       return react.createElement(
         react.Fragment,
         null,
+        foldBeforeTokens !== null && foldAfterTokens !== null
+          ? react.createElement("div", { className: "cm-token-compare" },
+              `本次折叠 token：${foldBeforeTokens} → ${foldAfterTokens}，约减少 ${Math.max(0, foldBeforeTokens - foldAfterTokens)} tokens`
+            )
+          : null,
         react.createElement(
           "div",
           { className: "cm-conv-head" },

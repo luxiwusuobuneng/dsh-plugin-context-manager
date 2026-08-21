@@ -8,7 +8,10 @@
 $ErrorActionPreference = "Stop"
 
 $root = $PSScriptRoot
-$profileNodeModules = Join-Path $env:USERPROFILE ".dsh\profiles\node_modules"
+$dshRoot = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE ".dsh" }
+$profileNodeModules = Join-Path $dshRoot "profiles\node_modules"
+$failed = $false
+New-Item -ItemType Directory -Path $profileNodeModules -Force | Out-Null
 
 $pairs = @(
     @{
@@ -27,16 +30,27 @@ $pairs = @(
 
 foreach ($pkg in $pairs) {
     $target = Join-Path $profileNodeModules $pkg.Name
-    if (-not (Test-Path $target)) {
-        Write-Host "[SKIP] $($pkg.Name): 未安装到 $target（请先安装/接线，见 README）" -ForegroundColor Yellow
+    New-Item -ItemType Directory -Path $target -Force | Out-Null
+    if (-not (Test-Path (Join-Path $pkg.Source "package.json"))) {
+        Write-Host "[FAIL] $($pkg.Name): 源目录缺少 package.json" -ForegroundColor Red
+        $failed = $true
         continue
     }
     Copy-Item -Path (Join-Path $pkg.Source "*") -Destination $target -Recurse -Force
-    Write-Host "[OK]   $($pkg.Name) -> $target" -ForegroundColor Green
+    if (Test-Path (Join-Path $target "package.json")) {
+        Write-Host "[OK]   $($pkg.Name) -> $target" -ForegroundColor Green
+    } else {
+        Write-Host "[FAIL] $($pkg.Name): 复制后未找到 package.json" -ForegroundColor Red
+        $failed = $true
+    }
 }
 
 Write-Host ""
 Write-Host "======================================================" -ForegroundColor Cyan
-Write-Host "  同步完成。请【重启 DSH】使 Service/Agent 新代码生效。" -ForegroundColor Cyan
+if ($failed) {
+    Write-Host "  同步未完成：至少一个包复制失败。" -ForegroundColor Red
+    exit 1
+}
+Write-Host "  三个包同步完成。请【重启 DSH】使 Service/Agent 新代码生效。" -ForegroundColor Cyan
 Write-Host "  （浏览器端 UI 刷新页面即可；客户端 bundle 每次请求都从磁盘读取）" -ForegroundColor Cyan
 Write-Host "======================================================" -ForegroundColor Cyan

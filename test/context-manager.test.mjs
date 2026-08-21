@@ -126,8 +126,8 @@ test("renderInjectedRecords renders nothing when both lists are empty", () => {
 test("renderInjectedRecords renders numbered priority records", () => {
   const out = renderInjectedRecords([{ summary: "甲" }, { summary: "乙" }], [], renderCfg);
   assert.ok(out.startsWith("Context-manager priority records"));
-  assert.ok(out.includes("1. 甲"));
-  assert.ok(out.includes("2. 乙"));
+  assert.ok(out.includes("甲"));
+  assert.ok(out.includes("乙"));
 });
 
 test("renderInjectedRecords puts global records after priority records", () => {
@@ -136,7 +136,7 @@ test("renderInjectedRecords puts global records after priority records", () => {
   const global = out.indexOf("global records");
   assert.ok(priority !== -1 && global !== -1);
   assert.ok(priority < global);
-  assert.ok(out.includes("1. 置顶"));
+  assert.ok(out.includes("置顶"));
 });
 
 test("renderInjectedRecords respects the per-record budget", () => {
@@ -147,8 +147,8 @@ test("renderInjectedRecords respects the per-record budget", () => {
 test("renderInjectedRecords caps injected counts", () => {
   const many = Array.from({ length: 10 }, (_, i) => ({ summary: `r${i}` }));
   const out = renderInjectedRecords(many, many, { ...renderCfg, maxInjected: 2, maxGlobalInjected: 1 });
-  assert.ok(out.includes("1. r0"));
-  assert.ok(out.includes("2. r1"));
+  assert.ok(out.includes("r0"));
+  assert.ok(out.includes("r1"));
   assert.ok(!out.includes("3. r2"));
   assert.ok(!out.includes("r9"));
 });

@@ -1,7 +1,7 @@
 {
   "name": "dsh-context-manager-agent-luxi",
   "version": "0.1.0",
-  "description": "Per-session context-manager agent row: records every conversation exchange, injects the priority-ordered records into the prompt, and ships the browser UI",
+  "description": "Agent-side fallback row for context-manager: injects priority records only when the Host message-injection channel is disabled",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
